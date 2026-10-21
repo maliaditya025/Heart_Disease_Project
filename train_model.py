@@ -1,196 +1,151 @@
-# %%
 import warnings
 warnings.filterwarnings("ignore")
 
 import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
-import seaborn as sns
+import joblib
 
-# %%
-df = pd.read_csv("/Users/adii/Downloads/heart.csv")
-
-df.head()
-
-# %%
-print(df.shape)
-print(df.info())
-
-# %%
-print(df.isnull().sum())
-
-# %%
-print(df.describe())
-
-# %%
-for col in df.columns:
-    print(col)
-    print(df[col].unique())
-    print("-"*40)
-
-# %%
-plt.figure(figsize=(6,4))
-sns.countplot(x="target", data=df)
-plt.title("Heart Disease Distribution")
-plt.show()
-
-# %%
-plt.figure(figsize=(12,8))
-sns.heatmap(df.corr(), annot=True, cmap="coolwarm")
-plt.title("Correlation Heatmap")
-plt.show()
-
-# %%
-X = df.drop("target", axis=1)
-y = df["target"]
-
-# %%
-from sklearn.model_selection import train_test_split
-
-X_train, X_test, y_train, y_test = train_test_split(
-    X,
-    y,
-    test_size=0.2,
-    random_state=42
-)
-
-# %%
+from sklearn.model_selection import train_test_split, GridSearchCV, StratifiedKFold
+from sklearn.pipeline import Pipeline
+from sklearn.impute import SimpleImputer
 from sklearn.preprocessing import StandardScaler
-
-scaler = StandardScaler()
-
-X_train = scaler.fit_transform(X_train)
-X_test = scaler.transform(X_test)
-
-# %%
+from sklearn.feature_selection import SelectKBest, f_classif
+from sklearn.metrics import accuracy_score, classification_report, roc_auc_score
 from sklearn.linear_model import LogisticRegression
-
-lr = LogisticRegression(
-    solver="liblinear",
-    max_iter=1000,
-    random_state=42
-)
-
-lr.fit(X_train, y_train)
-
-y_pred_lr = lr.predict(X_test)
-
-# %%
-from sklearn.metrics import accuracy_score
-
-print("Accuracy :", accuracy_score(y_test, y_pred_lr))
-
-# %%
-from sklearn.metrics import confusion_matrix
-
-cm = confusion_matrix(y_test, y_pred_lr)
-
-plt.figure(figsize=(5,4))
-sns.heatmap(cm, annot=True, fmt="d", cmap="Blues")
-plt.xlabel("Predicted")
-plt.ylabel("Actual")
-plt.title("Logistic Regression")
-plt.show()
-
-# %%
-from sklearn.metrics import classification_report
-
-print(classification_report(y_test, y_pred_lr))
-
-# %%
 from sklearn.tree import DecisionTreeClassifier
+from sklearn.ensemble import RandomForestClassifier, ExtraTreesClassifier, GradientBoostingClassifier
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.svm import SVC
+from sklearn.naive_bayes import GaussianNB
 
-dt = DecisionTreeClassifier(random_state=42)
+# 1. Load and clean data
+df = pd.read_csv("heart.csv")
+df = df.replace([np.inf, -np.inf], np.nan)
+df = df.drop_duplicates().dropna(subset=["target"])
 
-dt.fit(X_train, y_train)
+X = df.drop(columns="target")
+y = df["target"].astype(int)
 
-y_pred_dt = dt.predict(X_test)
+if set(y.unique()) != {0, 1}:
+    raise ValueError("Target must contain both classes: 0 and 1.")
 
-print("Decision Tree Accuracy :", accuracy_score(y_test, y_pred_dt))
+if not all(pd.api.types.is_numeric_dtype(X[c]) for c in X.columns):
+    raise ValueError("This version expects numeric input features.")
 
-# %%
-cm = confusion_matrix(y_test, y_pred_dt)
+X = X.loc[:, X.nunique(dropna=True) > 1]
 
-plt.figure(figsize=(5,4))
-sns.heatmap(cm, annot=True, fmt="d", cmap="Greens")
-plt.xlabel("Predicted")
-plt.ylabel("Actual")
-plt.title("Decision Tree")
-plt.show()
+if X.isna().all().any():
+    raise ValueError("A feature contains only missing values.")
 
-# %%
-from sklearn.ensemble import RandomForestClassifier
-
-rf = RandomForestClassifier(
-    n_estimators=100,
-    random_state=42
+# 2. Split data
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.2, random_state=42, stratify=y
 )
 
-rf.fit(X_train, y_train)
+# 3. Define models and parameters
+models = {
+    "Logistic Regression": (
+        LogisticRegression(max_iter=2000),
+        {"model__C": [0.1, 1, 10]}
+    ),
+    "Decision Tree": (
+        DecisionTreeClassifier(random_state=42),
+        {"model__max_depth": [3, 5, None]}
+    ),
+    "Random Forest": (
+        RandomForestClassifier(random_state=42),
+        {"model__n_estimators": [100, 200], "model__max_depth": [5, None]}
+    ),
+    "Extra Trees": (
+        ExtraTreesClassifier(random_state=42),
+        {"model__n_estimators": [100, 200]}
+    ),
+    "Gradient Boosting": (
+        GradientBoostingClassifier(random_state=42),
+        {"model__n_estimators": [100, 200], "model__learning_rate": [0.05, 0.1]}
+    ),
+    "KNN": (
+        KNeighborsClassifier(),
+        {"model__n_neighbors": [3, 5, 7, 9]}
+    ),
+    "SVM": (
+        SVC(probability=True, random_state=42),
+        {"model__C": [0.1, 1, 10], "model__kernel": ["linear", "rbf"]}
+    ),
+    "Naive Bayes": (
+        GaussianNB(),
+        {"model__var_smoothing": [1e-9, 1e-8, 1e-7]}
+    )
+}
 
-y_pred_rf = rf.predict(X_test)
+cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+results = []
+best_score, best_model, best_name = -1, None, None
 
-print("Random Forest Accuracy :", accuracy_score(y_test, y_pred_rf))
+# 4. Compare models and feature subsets
+for name, (estimator, params) in models.items():
 
-# %%
-cm = confusion_matrix(y_test, y_pred_rf)
+    pipeline = Pipeline([
+        ("imputer", SimpleImputer(strategy="median")),
+        ("scaler", StandardScaler()),
+        ("features", SelectKBest(score_func=f_classif)),
+        ("model", estimator)
+    ])
 
-plt.figure(figsize=(5,4))
-sns.heatmap(cm, annot=True, fmt="d", cmap="Oranges")
-plt.xlabel("Predicted")
-plt.ylabel("Actual")
-plt.title("Random Forest")
-plt.show()
+    search = GridSearchCV(
+        pipeline,
+        {
+            **params,
+            "features__k": list(range(1, X.shape[1] + 1))
+        },
+        scoring="roc_auc",
+        cv=cv,
+        n_jobs=-1
+    )
 
-# %%
-from sklearn.metrics import roc_curve, auc
+    search.fit(X_train, y_train)
 
-y_prob = lr.predict_proba(X_test)[:,1]
+    results.append({
+        "Model": name,
+        "CV ROC-AUC": search.best_score_,
+        "Features": search.best_params_["features__k"]
+    })
 
-fpr, tpr, threshold = roc_curve(y_test, y_prob)
+    print(f"{name}: CV ROC-AUC = {search.best_score_:.4f}")
 
-roc_auc = auc(fpr, tpr)
+    if search.best_score_ > best_score:
+        best_score = search.best_score_
+        best_model = search.best_estimator_
+        best_name = name
 
-plt.figure(figsize=(6,5))
-plt.plot(fpr, tpr, label="AUC = %0.2f"%roc_auc)
-plt.plot([0,1],[0,1],'k--')
-plt.xlabel("False Positive Rate")
-plt.ylabel("True Positive Rate")
-plt.title("ROC Curve")
-plt.legend()
-plt.show()
+# 5. Compare results
+results = pd.DataFrame(results).sort_values(
+    "CV ROC-AUC", ascending=False
+)
 
-# %%
-print("Logistic Regression :", accuracy_score(y_test, y_pred_lr))
-print("Decision Tree       :", accuracy_score(y_test, y_pred_dt))
-print("Random Forest       :", accuracy_score(y_test, y_pred_rf))
+print("\nMODEL COMPARISON")
+print(results.to_string(index=False))
+results.to_csv("model_comparison.csv", index=False)
 
-# %%
-print("Enter Patient Details")
-age = int(input("Enter Age (years): "))
-sex = int(input("Enter Sex (0 = Female, 1 = Male): "))
-cp = int(input("Enter Chest Pain Type (0-3): "))
-trestbps = int(input("Enter Resting Blood Pressure (mmHg): "))
-chol = int(input("Enter Cholesterol (mg/dl): "))
-fbs = int(input("Fasting Blood Sugar > 120 mg/dl? (0 = No, 1 = Yes): "))
-restecg = int(input("Enter Resting ECG Result (0-2): "))
-thalach = int(input("Enter Maximum Heart Rate Achieved: "))
-exang = int(input("Exercise-Induced Angina? (0 = No, 1 = Yes): "))
-oldpeak = float(input("Enter Oldpeak (ST Depression): "))
-slope = int(input("Enter Slope of Peak Exercise ST Segment (0-2): "))
-ca = int(input("Enter Number of Major Vessels (0-4): "))
-thal = int(input("Enter Thal (1 = Normal, 2 = Fixed Defect, 3 = Reversible Defect): "))
+# 6. Evaluate the selected model
+pred = best_model.predict(X_test)
 
-# %%
-new_patient = scaler.transform(new_patient)
+print("\nBEST MODEL:", best_name)
+print("Test Accuracy:", accuracy_score(y_test, pred))
+print("Test ROC-AUC:", roc_auc_score(
+    y_test, best_model.predict_proba(X_test)[:, 1]
+))
+print("\nClassification Report:\n",
+      classification_report(y_test, pred, zero_division=0))
 
-# %%
-prediction = rf.predict(new_patient)
+# 7. Display selected features
+mask = best_model.named_steps["features"].get_support()
+print("Selected Features:", X.columns[mask].tolist())
 
-if prediction[0] == 1:
-    print("Heart Disease Detected")
-else:
-    print("No Heart Disease")
+# 8. Save complete pipeline and feature order
+joblib.dump(
+    {"model": best_model, "features": X.columns.tolist()},
+    "heart_model.pkl"
+)
 
-# %%
-
+print("\nBest model and preprocessing pipeline saved!")
